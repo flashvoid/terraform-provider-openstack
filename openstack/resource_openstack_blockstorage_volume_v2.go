@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gophercloud/gophercloud"
+	"github.com/gophercloud/gophercloud/openstack/blockstorage/extensions/volumeactions"
 	"github.com/gophercloud/gophercloud/openstack/blockstorage/v2/volumes"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/volumeattach"
 	"github.com/hashicorp/terraform/helper/hashcode"
@@ -40,7 +41,6 @@ func resourceBlockStorageVolumeV2() *schema.Resource {
 			"size": &schema.Schema{
 				Type:     schema.TypeInt,
 				Required: true,
-				ForceNew: true,
 			},
 			"name": &schema.Schema{
 				Type:     schema.TypeString,
@@ -226,6 +226,38 @@ func resourceBlockStorageVolumeV2Update(d *schema.ResourceData, meta interface{}
 
 	if d.HasChange("metadata") {
 		updateOpts.Metadata = resourceVolumeMetadataV2(d)
+	}
+
+	if d.HasChange("size") {
+		blockStorageClient3, err := config.blockStorageV3Client(GetRegion(d, config))
+		if err != nil {
+			return fmt.Errorf("Error creating OpenStack block storage client V3: %s", err)
+		}
+
+		blockStorageClient3.Microversion = "3.42"
+		extendOpts := volumeactions.ExtendSizeOpts{d.Get("size").(int)}
+		err = volumeactions.ExtendSize(blockStorageClient3, d.Id(), extendOpts).ExtractErr()
+		if err != nil {
+			/*
+				BUG here, openstack return 202 as in example below but gophercloud
+				reads it as an error with text string "EOF" and totally ambiguous type.
+				Obviously not production quality.
+
+				HTTP/1.1 202 Accepted
+				Date: Wed, 09 May 2018 04:35:39 GMT
+				Server: Apache/2.4.29 (Ubuntu)
+				Content-Length: 0
+				x-compute-request-id: req-fff99e6f-f16d-48ed-aa33-d95a57c418f0
+				Content-Type: application/json
+				OpenStack-API-Version: volume 3.42
+				Vary: OpenStack-API-Version
+				x-openstack-request-id: req-fff99e6f-f16d-48ed-aa33-d95a57c418f0
+				Connection: close
+			*/
+			if err.Error() != "EOF" {
+				return fmt.Errorf("Error extending volume size %s", err)
+			}
+		}
 	}
 
 	_, err = volumes.Update(blockStorageClient, d.Id(), updateOpts).Extract()
